@@ -33,6 +33,7 @@ Montada a partir dos metadados oficiais do DOI. O registro lista Simon Thomas du
 - Uso permitido apenas para fins não comerciais.
 - É obrigatório citar o dataset com a citação completa que aparece na página do UQ eSpace. Ela vai no slide de fontes.
 - A licença não trata de redistribuição. Não subir o dataset no Classroom nem no GitHub: enviar só o código, a indicação de onde baixar e as imagens de resultado.
+- Extrair os dados **fora do repositório** (por exemplo, em `~/dados/histologia_pele`). O download tem mais de 10 GB, e assim não há risco de ele ir parar no git.
 
 ## Dependências
 
@@ -43,11 +44,13 @@ Montada a partir dos metadados oficiais do DOI. O registro lista Simon Thomas du
 | `scikit-image` | Ler as imagens TIF e as máscaras PNG. Traz `numpy` e `pillow` junto. |
 | `matplotlib` | Mostrar lado a lado a lâmina, a máscara real e a máscara prevista. |
 | `ipykernel` | Rodar os notebooks no VS Code usando o ambiente do uv. |
+| `optuna` | Buscar automaticamente os melhores hiperparâmetros de treino. |
+| `plotly` | Gerar os gráficos do Optuna (histórico das tentativas e importância de cada hiperparâmetro). |
 
-Todas têm versão para o Python 3.14 do projeto. Para instalar, na raiz do repositório:
+Todas já estão no `pyproject.toml` da raiz do repositório. Para instalar, na raiz:
 
 ```bash
-uv add torch torchvision segmentation-models-pytorch scikit-image matplotlib ipykernel
+uv sync
 ```
 
 O download tem alguns GB, porque o `torch` vem com as bibliotecas da GPU.
@@ -91,3 +94,60 @@ Na descida, a imagem encolhe pela metade a cada nível e o número de filtros cr
 - No original, a saída era menor que a entrada (572 → 388 pixels). Aqui ela sai do mesmo tamanho.
 - O original subia com convolução transposta. Aqui sobe com interpolação seguida de convolução.
 - Aqui há 5 reduções de tamanho, contra 4 no original.
+
+## Salvar e carregar a rede treinada
+
+Para a demo não precisar treinar a rede de novo:
+
+```python
+# no fim do treino
+model.save_pretrained("modelo_unet_pele")
+
+# no notebook da demo
+import segmentation_models_pytorch as smp
+model = smp.from_pretrained("modelo_unet_pele")
+model.eval()
+```
+
+A pasta salva guarda a arquitetura (`config.json`) e os pesos aprendidos (`model.safetensors`). O `from_pretrained` recria a rede já treinada.
+
+- **Salvar o melhor modelo, não só o último:** durante o treino, salvar sempre que o IoU na validação melhorar.
+- **Não versionar os pesos no git:** o arquivo fica perto de 100 MB, e o GitHub recusa arquivos acima disso. Enviar pelo Classroom ou pelo Drive.
+- **A demo roda sem GPU:** o modelo carrega na CPU por padrão; só fica mais lento.
+- **Em outro computador, rodar a demo uma vez antes, com internet:** ao recriar a rede, a biblioteca baixa os pesos do ImageNet do encoder na primeira vez.
+
+## Otimização dos hiperparâmetros (Optuna)
+
+Mesma abordagem do projeto [`autotuning_cnn`](https://github.com/DaviMacielCavalcante/autotuning_cnn): 20 tentativas com `TPESampler` + `MedianPruner` e objetivo `min(val_loss)`.
+
+Diferença em relação ao projeto anterior, que usava Keras: em PyTorch, a poda das tentativas ruins vai direto no laço de treino, sem callback.
+
+```python
+for epoch in range(epochs):
+    treinar_uma_epoca(...)
+    val_loss = avaliar(...)
+    trial.report(val_loss, epoch)
+    if trial.should_prune():
+        raise optuna.TrialPruned()
+```
+
+Entre uma tentativa e outra, liberar a GPU com `del model` e `torch.cuda.empty_cache()`, que faz o papel do `keras.backend.clear_session()`.
+
+### Espaço de busca
+
+| Hiperparâmetro | Valores |
+| --- | --- |
+| `learning_rate` | 1e-4 a 3e-3 (escala log) |
+| `weight_decay` | 1e-6 a 1e-3 (escala log) |
+| `batch_size` | 4, 8 ou 16, o que couber na GPU |
+| `decoder_use_norm` | `batchnorm` ou `layernorm` |
+| `decoder_attention_type` | nenhuma ou `scse` |
+
+### Cuidados (lições do `autotuning_cnn`)
+
+- **Embaralhar os recortes.** Os recortes saem de cada lâmina em sequência e ficam agrupados, o mesmo cenário do esquecimento catastrófico do projeto anterior (§30i do `APRENDIZADO.md`). Usar `DataLoader(shuffle=True)` e conferir.
+- **BatchNorm com batch pequeno.** Com recortes de 512×512 numa GPU de 8 GB, o batch vai ser pequeno, e o BatchNorm fica instável (§25). Por isso o batch e o tipo de normalização estão no espaço de busca.
+- **Não ajustar o peso entre entropia cruzada e Dice.** Se a composição da loss mudar entre tentativas, o `val_loss` deixa de ser comparável.
+- **Comparação justa.** U-Net padrão contra a vencedora do Optuna, 3 execuções de cada, com o mesmo critério de parada (§31 e §30b).
+- **Separar por lâmina.** Recortes da mesma lâmina nunca podem cair no treino e na validação ao mesmo tempo, senão o resultado sai inflado. Usar a divisão que vem com o dataset, que já é por lâmina.
+- **Ordem.** Primeiro a U-Net padrão treinando e salva; depois o Optuna, com as imagens reduzidas e poucas épocas por tentativa.
