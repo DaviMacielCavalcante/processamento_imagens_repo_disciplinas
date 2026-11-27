@@ -54,6 +54,11 @@ A conferência faz o caminho de volta: `PALETA[classes]` reconstrói a máscara 
   - 231 pares de treino, 31 de teste e 28 de validação;
   - nos três conjuntos, todas as imagens têm a mesma altura e largura do seu mapa de classes (`all(img.shape[:2] == cls.shape for img, cls in ...)` deu `True` para treino, teste e validação).
 
+### 9. Preenchimento das lâminas menores que 512
+
+- **Teste:** `random_cut(train[200][0], train[200][1])`, com a lâmina `IEC_3` (386 × 281), que tem os dois lados menores que 512. A imagem é completada com 255 (branco do vidro) e as classes com 0 (fundo), embaixo e à direita.
+- **Resultado:** imagem `(512, 512, 3)` e classes `(512, 512)`.
+
 ### Medição preliminar: carregar o conjunto de treino
 
 Feita fora do notebook, para planejar o próximo passo.
