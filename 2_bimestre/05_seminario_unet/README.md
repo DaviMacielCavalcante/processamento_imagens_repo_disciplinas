@@ -2,6 +2,8 @@
 
 Enunciado: [pdi_cc8_2bim_seminario_cnn.pdf](pdi_cc8_2bim_seminario_cnn.pdf)
 
+Registro das verificações feitas durante o desenvolvimento do notebook: [DESENVOLVIMENTO.md](DESENVOLVIMENTO.md)
+
 - Entrega dos arquivos no Classroom: até 23h59 de 03/12/2026
 - Apresentação: 04/12/2026, de 10 a 15 minutos
 
@@ -22,9 +24,63 @@ Montada a partir dos metadados oficiais do DOI. O registro lista Simon Thomas du
 ### Conteúdo
 
 - 290 lâminas de pele coradas com H&E: carcinoma basocelular (140), espinocelular (60) e intraepidérmico (90).
-- Imagens em TIF e máscaras em PNG, marcadas à mão em 12 classes: glândulas, inflamação, folículos pilosos, hipoderme, derme reticular, derme papilar, epiderme, queratina, fundo, BCC, SCC e IEC. A legenda de cores está no repositório.
-- As imagens vêm na resolução original e também reduzidas 2x, 5x e 10x. As versões reduzidas devem bastar para a demo.
-- A divisão em treino, validação e teste já vem pronta: é a mesma usada no artigo original.
+- Imagens em TIF (RGB, comprimidas em LZW) e máscaras em PNG (RGB, uma cor por classe), marcadas à mão em 12 classes. A legenda de cores está em `data/12_class_Palette.tif`.
+- A divisão em treino, validação e teste já vem pronta, separada por lâmina, e é a mesma usada no artigo original: 231 lâminas de treino (`data/train_files.txt`), 28 de validação (`data/validation_files.txt`) e 31 de teste (`data/test_files.txt`).
+
+Estrutura depois de extrair (só as pastas usadas no projeto):
+
+```text
+data/
+├── 10x/
+│   ├── Images/   BCC_1.tif, SCC_33.tif, ...
+│   └── Masks/    BCC_1.png, SCC_33.png, ...
+├── 12_class_Palette.tif
+├── train_files.txt
+├── validation_files.txt
+└── test_files.txt
+```
+
+### Versão usada: 10x
+
+As imagens vêm em quatro resoluções (tamanho mediano das lâminas):
+
+| Versão | Tamanho típico (altura × largura) | Espaço em disco |
+| --- | --- | --- |
+| 1x (original) | 7696 × 9184 | 27 GB |
+| 2x | 3848 × 4592 | 7,8 GB |
+| 5x | 1539 × 1836 | 1,4 GB |
+| **10x** | **769 × 918** | **393 MB** |
+
+Usamos a **10x**:
+
+- As máscaras são marcadas em regiões grandes, não célula por célula. O detalhe extra da 5x não ajuda a rede a acertar essas máscaras.
+- A 10x treina cerca de 4 vezes mais rápido que a 5x, o que deixa tempo para o Optuna.
+- Na 10x, um recorte de 512×512 cobre cerca de 3,4 mm de tecido (1 pixel ≈ 6,7 µm). Esse contexto ajuda a distinguir os três tipos de carcinoma.
+
+As pastas `1x`, `2x`, `5x` e `MarginData` não são usadas e podem ser apagadas para liberar espaço.
+
+### Classes
+
+Cada cor da máscara vira um número de classe antes do treino. A conversão não cria rótulos novos: ela só traduz o mesmo rótulo de cor para número, como consultar a legenda de um mapa. A numeração é nossa: fundo primeiro, depois as camadas da pele de cima para baixo, as estruturas e os cânceres. A porcentagem é a fração dos pixels das máscaras 10x.
+
+| Nº | Classe | Sigla | Cor (RGB) | % dos pixels |
+| --- | --- | --- | --- | --- |
+| 0 | Fundo | BKG | 0, 0, 0 | 58,6% |
+| 1 | Queratina | KER | 248, 123, 168 | 2,1% |
+| 2 | Epiderme | EPI | 73, 0, 106 | 0,6% |
+| 3 | Derme papilar | PAP | 236, 85, 157 | 1,7% |
+| 4 | Derme reticular | RET | 181, 9, 130 | 19,9% |
+| 5 | Hipoderme | HYP | 254, 246, 242 | 9,3% |
+| 6 | Glândulas | GLD | 108, 0, 115 | 0,4% |
+| 7 | Folículos pilosos | FOL | 216, 47, 148 | 0,2% |
+| 8 | Inflamação | INF | 145, 1, 122 | 2,8% |
+| 9 | Carcinoma basocelular | BCC | 127, 255, 255 | 1,1% |
+| 10 | Carcinoma espinocelular | SCC | 127, 255, 142 | 2,4% |
+| 11 | Carcinoma intraepidérmico | IEC | 255, 127, 127 | 1,0% |
+
+- **De onde vêm as cores:** contando os pixels das 290 máscaras 10x, só 12 cores somam 99,99% do total. A cor exata de cada classe foi lida no pixel central de cada quadrado da legenda (`data/12_class_Palette.tif`, imagem RGBA). As 12 cores da legenda batem exatamente com as 12 cores dominantes das máscaras. Para conferir: na legenda, os quadrados da coluna da esquerda estão na coluna 65 e os da direita na 282, nas linhas 57, 142, 231, 324, 420 e 512, de cima para baixo.
+- **Cores fora da legenda:** as máscaras têm cerca de 3.200 outras cores, que somam só 0,01% dos pixels. São sobras das bordas, criadas quando as máscaras foram reduzidas. Na conversão, cada uma vira a cor da legenda mais próxima.
+- **Desbalanceamento:** o fundo ocupa 59% dos pixels e os folículos só 0,2%. É por isso que a perda usa Dice junto com a entropia cruzada.
 
 ## Licença
 
@@ -42,10 +98,13 @@ Montada a partir dos metadados oficiais do DOI. O registro lista Simon Thomas du
 | `torch` e `torchvision` | Criar e treinar a U-Net. |
 | `segmentation-models-pytorch` | U-Net pronta, com o encoder já pré-treinado no ImageNet. Com só 290 lâminas, isso faz bastante diferença. |
 | `scikit-image` | Ler as imagens TIF e as máscaras PNG. Traz `numpy` e `pillow` junto. |
+| `imagecodecs` | Descompactar os TIF, que estão comprimidos em LZW. Sem ele, o `scikit-image` não consegue abri-los. |
 | `matplotlib` | Mostrar lado a lado a lâmina, a máscara real e a máscara prevista. |
 | `ipykernel` | Rodar os notebooks no VS Code usando o ambiente do uv. |
 | `optuna` | Buscar automaticamente os melhores hiperparâmetros de treino. |
 | `plotly` | Gerar os gráficos do Optuna (histórico das tentativas e importância de cada hiperparâmetro). |
+| `tqdm` | Barra de progresso nos laços demorados, como a carga das lâminas. |
+| `ipywidgets` | Permite ao `tqdm.auto` desenhar a barra gráfica dentro do notebook. |
 
 Todas já estão no `pyproject.toml` da raiz do repositório. Para instalar, na raiz:
 
@@ -82,7 +141,7 @@ Na descida, a imagem encolhe pela metade a cada nível e o número de filtros cr
 
 ### Escolhas
 
-- **Entrada em recortes de 512×512.** A lâmina inteira não cabe na memória da GPU. O lado do recorte precisa ser múltiplo de 32, porque a imagem é dividida por 2 cinco vezes.
+- **Entrada em recortes de 512×512 da versão 10x.** As lâminas têm tamanhos diferentes, e cada lote de treino precisa de imagens do mesmo tamanho. Lâminas com menos de 512 pixels de lado são completadas com fundo (classe 0). O lado do recorte precisa ser múltiplo de 32, porque a imagem é dividida por 2 cinco vezes.
 - **Encoder pré-treinado.** A ResNet34 já aprendeu bordas e texturas em milhões de fotos. Com só 290 lâminas, começar disso é muito melhor do que treinar do zero. Ela é leve e cabe em uma GPU de 8 GB.
 - **Saída com 12 canais**, um por classe de tecido. Cada pixel recebe a classe com a nota mais alta.
 - **Função de perda: entropia cruzada + Dice.** Fundo e derme ocupam muito espaço, enquanto câncer e glândulas ocupam pouco. O Dice impede que a rede ignore as classes pequenas.
